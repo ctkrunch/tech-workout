@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect Spotify</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: .6rem; font-size: 1rem; margin: .4rem 0 1rem; }
+  textarea { height: 7rem; font-family: monospace; }
+  button { padding: .7rem 1.2rem; font-size: 1rem; border: 0; border-radius: 6px; background: #1db954; color: #fff; cursor: pointer; }
+  code { background: #eee; padding: 2px 5px; border-radius: 4px; word-break: break-all; }
+  .err { color: #b00020; }
+</style>
+</head>
+<body>
+<h1>Connect Spotify</h1>
+
+<div id="step1">
+  <p>1. Paste your Spotify app's <b>Client ID</b>:</p>
+  <input id="cid" placeholder="e.g. 3f2a9c...">
+  <p>2. Make sure this exact address is listed as a Redirect URI in your Spotify app:</p>
+  <p><code id="redir"></code></p>
+  <button id="go">Connect Spotify</button>
+</div>
+
+<div id="step2" style="display:none">
+  <p>Success. Copy the text below and save it as a GitHub secret named <b>SPOTIFY_REFRESH_TOKEN</b>.
+  Keep it private, like a password.</p>
+  <textarea id="token" readonly></textarea>
+  <button id="copy">Copy</button>
+  <p>Your Client ID (needed for the secret <b>SPOTIFY_CLIENT_ID</b>): <code id="cidshow"></code></p>
+</div>
+
+<p id="msg" class="err"></p>
+
+<script>
+const SCOPES = [
+  "user-top-read", "user-read-recently-played", "user-library-read",
+  "playlist-modify-private", "playlist-modify-public", "playlist-read-private"
+].join(" ");
+const redirect = location.origin + location.pathname;
+document.getElementById("redir").textContent = redirect;
+document.getElementById("cid").value = localStorage.getItem("cid") || "";
+
+const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
+  .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+async function start() {
+  const cid = document.getElementById("cid").value.trim();
+  if (!cid) { document.getElementById("msg").textContent = "Please paste your Client ID first."; return; }
+  localStorage.setItem("cid", cid);
+  const bytes = crypto.getRandomValues(new Uint8Array(48));
+  const verifier = b64url(bytes);
+  localStorage.setItem("verifier", verifier);
+  const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  const p = new URLSearchParams({
+    client_id: cid, response_type: "code", redirect_uri: redirect,
+    scope: SCOPES, code_challenge_method: "S256", code_challenge: challenge
+  });
+  location.href = "https://accounts.spotify.com/authorize?" + p;
+}
+
+async function finish(code) {
+  document.getElementById("step1").style.display = "none";
+  const cid = localStorage.getItem("cid");
+  const r = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: cid, grant_type: "authorization_code", code,
+      redirect_uri: redirect, code_verifier: localStorage.getItem("verifier")
+    })
+  });
+  const data = await r.json();
+  if (!data.refresh_token) {
+    document.getElementById("msg").textContent = "Spotify said: " + JSON.stringify(data) + " — go back and try again.";
+    document.getElementById("step1").style.display = "";
+    return;
+  }
+  document.getElementById("token").value = data.refresh_token;
+  document.getElementById("cidshow").textContent = cid;
+  document.getElementById("step2").style.display = "";
+  history.replaceState({}, "", location.pathname);
+}
+
+document.getElementById("go").onclick = start;
+document.getElementById("copy").onclick = () => {
+  const t = document.getElementById("token"); t.select(); document.execCommand("copy");
+};
+const params = new URLSearchParams(location.search);
+if (params.get("code")) finish(params.get("code"));
+else if (params.get("error")) document.getElementById("msg").textContent = "Spotify error: " + params.get("error");
+</script>
+</body>
+</html>
