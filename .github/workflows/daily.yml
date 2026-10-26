@@ -1,0 +1,91 @@
+name: Daily Tech Workout
+
+on:
+  schedule:
+    # Times are UTC. 07:00 UTC = 3:00 AM US Eastern (summer) / 2:00 AM (winter).
+    - cron: "0 7 * * *"     # 1) write + publish today's podcast
+    - cron: "30 9 * * *"    # 2) build the playlist (waits for Spotify if needed)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to run"
+        type: choice
+        default: setup
+        options: [setup, publish, playlist, all]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: write
+
+concurrency:
+  group: tech-workout
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_TTS_API_KEY: ${{ secrets.GOOGLE_TTS_API_KEY }}
+      SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+      SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+      SPOTIFY_SHOW_ID: ${{ vars.SPOTIFY_SHOW_ID }}
+      PODCAST_EMAIL: ${{ vars.PODCAST_EMAIL }}
+      PODCAST_TITLE: ${{ vars.PODCAST_TITLE }}
+      PLAYLIST_NAME: ${{ vars.PLAYLIST_NAME }}
+      TZ_NAME: ${{ vars.TZ_NAME }}
+      TOTAL_MINUTES: ${{ vars.TOTAL_MINUTES }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Decide what to run
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "${{ github.event.schedule }}" = "0 7 * * *" ]; then M=publish; else M=playlist; fi
+          else
+            M="${{ github.event.inputs.mode }}"
+          fi
+          echo "mode=$M" >> "$GITHUB_OUTPUT"
+          echo "Running mode: $M"
+
+      - name: Build website (and podcast episodes)
+        if: steps.mode.outputs.mode != 'playlist'
+        run: |
+          if [ "${{ steps.mode.outputs.mode }}" = "setup" ]; then python main.py setup; else python main.py publish; fi
+
+      - uses: actions/configure-pages@v5
+        if: steps.mode.outputs.mode != 'playlist'
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.mode.outputs.mode != 'playlist'
+        with:
+          path: site
+
+      - name: Publish website
+        id: deploy
+        if: steps.mode.outputs.mode != 'playlist'
+        uses: actions/deploy-pages@v4
+
+      - name: Build Spotify playlist
+        if: steps.mode.outputs.mode == 'playlist' || steps.mode.outputs.mode == 'all'
+        run: python main.py playlist
+
+      - name: Keep the schedule from being auto-disabled
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable daily.yml --repo "${{ github.repository }}"
